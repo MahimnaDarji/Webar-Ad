@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Stabilized + Default Scanner</title>
+  <title>WebAR Ad — Auto Fit (Any Print Size)</title>
 
   <!-- A-Frame -->
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
@@ -55,12 +55,14 @@
       <video id="adVideo" src="./assets/ad.mp4" preload="auto" webkit-playsinline playsinline muted loop crossorigin="anonymous"></video>
     </a-assets>
 
-    <!-- MindAR’s built-in scanning/loading UI will show by default now -->
+    <!-- MindAR’s built-in scanning/loading UI shows by default -->
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
     <a-entity id="targetRoot" mindar-image-target="targetIndex: 0">
+      <!-- Ad plane (we set exact aspect in JS) -->
       <a-plane id="adPlane" src="#adImage" position="0 0 0" rotation="0 0 0" width="1" height="0.56"></a-plane>
 
+      <!-- Video plane (same size as ad; UV-cropped to fill) -->
       <a-plane id="videoPlane"
                material="shader: flat; src: #adVideo"
                position="0 0 0.001"
@@ -72,22 +74,15 @@
   </a-scene>
 
   <script>
+    
     window.addEventListener('DOMContentLoaded', () => {
-      const scene = document.querySelector('a-scene');
-      const preview = document.getElementById('camPreview');
-      const root = document.getElementById('targetRoot');
-
-      const adImg = document.getElementById('adImage');
-      const adPlane = document.getElementById('adPlane');
-
-      const video = document.getElementById('adVideo');
-      const videoPlane = document.getElementById('videoPlane');
-
-      // ====== FIT CONFIG ======
-      const FIT_MODE = 'cover'; 
-      const BASE_WIDTH = 1.0;
-      const OFFSET_X = 0.000, OFFSET_Y = 0.000;
-      const SCALE_X  = 1.000, SCALE_Y = 1.000;
+      const scene       = document.querySelector('a-scene');
+      const preview     = document.getElementById('camPreview');
+      const root        = document.getElementById('targetRoot');
+      const adImg       = document.getElementById('adImage');
+      const adPlane     = document.getElementById('adPlane');
+      const video       = document.getElementById('adVideo');
+      const videoPlane  = document.getElementById('videoPlane');
 
       // Attach MindAR’s internal camera feed to visible preview
       const attachPreview = () => {
@@ -104,46 +99,62 @@
       const tryAttach = () => { if (!attachPreview()) setTimeout(tryAttach, 150); };
       scene.addEventListener('loaded', tryAttach);
 
-      function sizePlanes() {
-        const adAspect = adImg.naturalWidth / adImg.naturalHeight;
+      // Ensure mesh/material is ready
+      function getVideoMap() {
+        const mesh = videoPlane.getObject3D('mesh');
+        return (mesh && mesh.material && mesh.material.map) ? mesh.material.map : null;
+      }
+
+      function fitPlanesCover() {
+        // 1) Read true aspects
+        const adAspect    = adImg.naturalWidth / adImg.naturalHeight;               // W/H
         const videoAspect = (video.videoWidth || 16) / (video.videoHeight || 9);
 
-        const adWidth = BASE_WIDTH;
-        const adHeight = adWidth / adAspect;
-        adPlane.setAttribute('width', adWidth);
-        adPlane.setAttribute('height', adHeight);
+        // 2) Size both planes to EXACT ad aspect (base width = 1 MindAR unit)
+        const adW = 1.0;
+        const adH = adW / adAspect;
+        adPlane.setAttribute('width',  adW);
+        adPlane.setAttribute('height', adH);
+        videoPlane.setAttribute('width',  adW);
+        videoPlane.setAttribute('height', adH);
 
-        let vidWidth, vidHeight;
-        if (FIT_MODE === 'contain') {
-          const hIfW = adWidth / videoAspect;
-          if (hIfW <= adHeight) { vidWidth = adWidth; vidHeight = hIfW; }
-          else { vidHeight = adHeight; vidWidth = adHeight * videoAspect; }
-        } else {
-          const hIfW = adWidth / videoAspect;
-          if (hIfW >= adHeight) { vidHeight = adHeight; vidWidth = adHeight * videoAspect; }
-          else { vidWidth = adWidth; vidHeight = adWidth / videoAspect; }
+        // 3) Crop video texture via UV so it "covers" without stretching
+        const map = getVideoMap();
+        if (!map) {
+          // If material not ready yet, retry shortly
+          setTimeout(fitPlanesCover, 50);
+          return;
         }
 
-        vidWidth  *= SCALE_X;
-        vidHeight *= SCALE_Y;
-        videoPlane.setAttribute('width', vidWidth);
-        videoPlane.setAttribute('height', vidHeight);
-        videoPlane.setAttribute('position', `${OFFSET_X} ${OFFSET_Y} 0.001`);
+        // Keep crop centered
+        if (map.center) map.center.set(0.5, 0.5);
 
-        const labelY = -(adHeight / 2) - 0.14;
-        const label = root.querySelector('a-text');
-        if (label) label.setAttribute('position', `0 ${labelY} 0.001`);
+        if (videoAspect > adAspect) {
+          // Video is wider: crop left/right
+          const showX = adAspect / videoAspect;   // fraction of video width to show
+          map.repeat.set(showX, 1);
+          map.offset.set((1 - showX) / 2, 0);     // center horizontally
+        } else {
+          // Video is taller: crop top/bottom
+          const showY = videoAspect / adAspect;   // fraction of video height to show
+          map.repeat.set(1, showY);
+          map.offset.set(0, (1 - showY) / 2);     // center vertically
+        }
+        map.needsUpdate = true;
       }
 
       function whenReady() {
         if (adImg.complete && adImg.naturalWidth > 0 && video.readyState >= 1) {
-          sizePlanes();
-        } else { setTimeout(whenReady, 60); }
+          fitPlanesCover();
+        } else {
+          setTimeout(whenReady, 60);
+        }
       }
       adImg.addEventListener('load', whenReady);
       video.addEventListener('loadedmetadata', whenReady);
       whenReady();
 
+      // Play/pause video with tracking
       root.addEventListener('targetFound', async () => {
         try { await video.play(); }
         catch (e) {
@@ -152,13 +163,8 @@
           window.addEventListener('click', resume, { once: true });
         }
       });
-
-      root.addEventListener('targetLost', () => {
-        video.pause();
-      });
+      root.addEventListener('targetLost', () => { video.pause(); });
     });
   </script>
 </body>
 </html>
-
-
