@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Video Overlay</title>
+  <title>WebAR Ad — Camera Preview + Video Overlay</title>
 
   <!-- A-Frame -->
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
@@ -12,44 +12,54 @@
 
   <style>
     html, body { margin: 0; height: 100%; background: #000; }
+    /* Live camera preview behind the AR canvas */
+    #camPreview {
+      position: fixed; inset: 0;
+      width: 100vw; height: 100vh;
+      object-fit: cover;
+      z-index: 0; /* behind the scene canvas */
+      background: #000;
+    }
+    /* Scene takes full screen; canvas will be transparent */
+    a-scene {
+      position: fixed; inset: 0;
+      z-index: 1;
+    }
     .ui, .footer {
       position: fixed; left: 0; right: 0; z-index: 10; color: #fff;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; text-align: center;
+      text-shadow: 0 1px 2px rgba(0,0,0,.6);
     }
     .ui { top: 0; padding: 10px 14px; background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,0)); }
     .footer { bottom: 0; padding: 10px 14px; background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,.55)); font-size: 13px; }
   </style>
 </head>
 <body>
+  <!-- Live camera preview (we attach MindAR's stream to this) -->
+  <video id="camPreview" autoplay playsinline muted></video>
+
   <div class="ui">Point your camera at your printed ad (or open <code>/assets/ad.png</code> on another screen)</div>
-  <div class="footer">Serve from <strong>http://localhost</strong> (or HTTPS later). Allow camera access.</div>
+  <div class="footer">Serve from <strong>http://localhost</strong> or HTTPS. Allow camera access.</div>
 
   <a-scene
     mindar-image="imageTargetSrc: ./assets/ad.mind"
     color-space="sRGB"
-    renderer="colorManagement: true, physicallyCorrectLights: true"
+    renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true"
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false"
   >
-    <!-- Assets: your ad image (for alignment) + your video -->
     <a-assets>
       <img id="adImage" src="./assets/ad.png" crossorigin="anonymous">
-      <!-- IMPORTANT: muted + playsinline enable auto-play on mobile -->
       <video id="adVideo" src="./assets/ad.mp4" preload="auto" webkit-playsinline playsinline muted loop crossorigin="anonymous"></video>
     </a-assets>
 
-    <!-- Required camera -->
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    <!-- Target content -->
     <a-entity id="targetRoot" mindar-image-target="targetIndex: 0">
-      <!-- Optionally keep the image plane underneath for quick visual alignment -->
-      <!-- Set width=1 (MindAR units). Adjust height to match your ad aspect ratio. -->
-      <!-- You can comment this plane out later if you want only the video. -->
+      <!-- Optional alignment plane (your ad image) -->
       <a-plane src="#adImage" position="0 0 0" rotation="0 0 0" width="1" height="0.56"></a-plane>
 
-      <!-- Video mapped onto a plane. Match its size/aspect to your ad. -->
-      <!-- Place it slightly above the image plane (small +z offset) so it renders on top. -->
+      <!-- Video overlay -->
       <a-plane id="videoPlane"
                material="shader: flat; src: #adVideo"
                position="0 0 0.001"
@@ -58,28 +68,45 @@
                height="0.56">
       </a-plane>
 
-      <!-- Label (optional) -->
       <a-text value="Playing…" align="center" position="0 -0.7 0.001" scale="0.6 0.6 0.6" color="#ffffff"></a-text>
     </a-entity>
   </a-scene>
 
   <script>
-    // Auto play/pause the video when the target is found/lost
+    // Hook MindAR's camera stream to the visible preview video
     window.addEventListener('DOMContentLoaded', () => {
       const scene = document.querySelector('a-scene');
-      const root = document.getElementById('targetRoot');
+      const preview = document.getElementById('camPreview');
       const video = document.getElementById('adVideo');
+      video.load(); // prep media
 
-      // Some browsers need an explicit load() before first play
-      video.load();
+      const attachPreview = () => {
+        try {
+          // MindAR A-Frame system exposes the internal video element
+          const mindarSystem = scene.systems['mindar-image-system'];
+          const internalVideo = mindarSystem && mindarSystem.video;
+          if (internalVideo && internalVideo.srcObject) {
+            preview.srcObject = internalVideo.srcObject; // reuse same MediaStream
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      };
+
+      // Try when scene loads; if not ready, retry a few times
+      const tryAttach = () => {
+        if (!attachPreview()) setTimeout(tryAttach, 150);
+      };
+      scene.addEventListener('loaded', tryAttach);
+
+      // Play/pause overlay video with tracking
+      const root = document.getElementById('targetRoot');
 
       root.addEventListener('targetFound', async () => {
         try {
           await video.play();
-          // console.log('Video playing');
         } catch (e) {
-          // Autoplay blocked? Tap anywhere to play.
-          console.warn('Autoplay blocked, waiting for user gesture');
+          // If autoplay blocked, play after a tap/click
           const resume = () => {
             video.play().catch(()=>{});
             window.removeEventListener('touchend', resume);
@@ -92,14 +119,8 @@
 
       root.addEventListener('targetLost', () => {
         video.pause();
-        // Optional: reset to start
+        // Optional: reset position
         // video.currentTime = 0;
-      });
-
-      // Helpful: when scene is loaded, ensure media is ready
-      scene.addEventListener('loaded', () => {
-        // iOS sometimes needs a muted play "kick"
-        video.muted = true;
       });
     });
   </script>
