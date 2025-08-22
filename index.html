@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Perfect Fit</title>
+  <title>WebAR Ad — Stabilized + Default Scanner</title>
 
   <!-- A-Frame -->
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
@@ -12,11 +12,6 @@
 
   <style>
     html, body { margin: 0; height: 100%; background: #000; }
-
-    /* Hide MindAR's default scanning/loading UI */
-    .mindar-ui, .mindar-ui-scanning, .mindar-ui-loading {
-      display: none !important;
-    }
 
     /* Live camera preview behind the AR canvas */
     #camPreview{
@@ -35,52 +30,35 @@
     }
     .ui{ top: 0; padding: 10px 14px; background: linear-gradient(rgba(0,0,0,.55), rgba(0,0,0,0)); }
     .footer{ bottom: 0; padding: 10px 14px; background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,.55)); font-size: 13px; }
-
-    /* === Custom Scanner Frame (resizable) === */
-    #scanFrame{
-      --scan-size: 80vmin;     /* visual guide; doesn't affect tracking */
-      position: fixed; inset: 0; margin: auto; 
-      z-index: 9999;
-      width: var(--scan-size);
-      height: calc(var(--scan-size) * 0.56); /* 16:9 window for guidance only */
-      border-radius: 14px; pointer-events: none;
-      box-shadow: 0 0 40px rgba(0,0,0,.35) inset;
-    }
-    #scanFrame::before{
-      content: ""; position: absolute; inset: 0; border-radius: 14px;
-      border: 5px solid rgba(255,255,255,0.9);
-    }
-    #scanFrame.hidden{ display: none; }
   </style>
 </head>
 <body>
   <!-- Visible camera preview -->
   <video id="camPreview" autoplay playsinline muted></video>
 
-  <!-- Bigger custom scanner frame (hides on targetFound) -->
-  <div id="scanFrame" aria-hidden="true"></div>
-
   <div class="ui">Point your camera at your printed ad (or open <code>/assets/ad.png</code> on another screen)</div>
   <div class="footer">Serve from <strong>http://localhost</strong> or HTTPS. Allow camera access.</div>
 
   <a-scene
-    mindar-image="imageTargetSrc: ./assets/ad.mind"
+    mindar-image="imageTargetSrc: ./assets/ad.mind;
+                  filterMinCF: 0.0005;
+                  filterBeta: 0.02;
+                  warmupTolerance: 5;
+                  missTolerance: 5"
     color-space="sRGB"
     renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true; antialias: true"
     vr-mode-ui="enabled: false"
     device-orientation-permission-ui="enabled: false"
   >
     <a-assets>
-      <!-- Your print image (used only for alignment preview) -->
       <img id="adImage" src="./assets/ad.png" crossorigin="anonymous">
-      <!-- Your video -->
       <video id="adVideo" src="./assets/ad.mp4" preload="auto" webkit-playsinline playsinline muted loop crossorigin="anonymous"></video>
     </a-assets>
 
+    <!-- MindAR’s built-in scanning/loading UI will show by default now -->
     <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
     <a-entity id="targetRoot" mindar-image-target="targetIndex: 0">
-      <!-- We will set width/height precisely in JS after reading real aspect ratios -->
       <a-plane id="adPlane" src="#adImage" position="0 0 0" rotation="0 0 0" width="1" height="0.56"></a-plane>
 
       <a-plane id="videoPlane"
@@ -99,7 +77,6 @@
     window.addEventListener('DOMContentLoaded', () => {
       const scene = document.querySelector('a-scene');
       const preview = document.getElementById('camPreview');
-      const scanFrame = document.getElementById('scanFrame');
       const root = document.getElementById('targetRoot');
 
       const adImg = document.getElementById('adImage');
@@ -108,14 +85,13 @@
       const video = document.getElementById('adVideo');
       const videoPlane = document.getElementById('videoPlane');
 
-      const FIT_MODE = 'cover';  
-      const BASE_WIDTH = 1.0;   
-      const OFFSET_X = 0.000;   
-      const OFFSET_Y = 0.000;    
-      const SCALE_X  = 1.000;    
-      const SCALE_Y  = 1.000;
+      // ====== FIT CONFIG ======
+      const FIT_MODE = 'cover'; 
+      const BASE_WIDTH = 1.0;
+      const OFFSET_X = 0.000, OFFSET_Y = 0.000;
+      const SCALE_X  = 1.000, SCALE_Y = 1.000;
 
-      // ====== Attach MindAR camera stream to visible preview ======
+      // Attach MindAR’s internal camera feed to visible preview
       const attachPreview = () => {
         try {
           const mindarSystem = scene.systems['mindar-image-system'];
@@ -130,76 +106,47 @@
       const tryAttach = () => { if (!attachPreview()) setTimeout(tryAttach, 150); };
       scene.addEventListener('loaded', tryAttach);
 
-      // ====== Compute precise sizes after media is ready ======
       function sizePlanes() {
-        // 1) Real aspect ratios
-        const adAspect = adImg.naturalWidth / adImg.naturalHeight;          // W/H
+        const adAspect = adImg.naturalWidth / adImg.naturalHeight;
         const videoAspect = (video.videoWidth || 16) / (video.videoHeight || 9);
 
-        // 2) Size the AD plane to match the tracked image proportions exactly
-        // MindAR normalizes target width; we use BASE_WIDTH = 1
         const adWidth = BASE_WIDTH;
         const adHeight = adWidth / adAspect;
         adPlane.setAttribute('width', adWidth);
         adPlane.setAttribute('height', adHeight);
 
-        // 3) Size the VIDEO plane using fit mode relative to ad plane
         let vidWidth, vidHeight;
         if (FIT_MODE === 'contain') {
-          // Fit entirely within ad plane (no crop)
-          // Match whichever side is the limiting dimension
-          const heightIfWidthMatches = adWidth / videoAspect;
-          if (heightIfWidthMatches <= adHeight) {
-            vidWidth = adWidth;
-            vidHeight = heightIfWidthMatches;
-          } else {
-            vidHeight = adHeight;
-            vidWidth = adHeight * videoAspect;
-          }
-        } else { // 'cover' default — fill the ad fully (edge-to-edge), allow minimal crop
-          const heightIfWidthMatches = adWidth / videoAspect;
-          if (heightIfWidthMatches >= adHeight) {
-            // Full width doesn't give enough height — scale up by height
-            vidHeight = adHeight;
-            vidWidth = adHeight * videoAspect;
-          } else {
-            // Full height doesn't give enough width — scale up by width
-            vidWidth = adWidth;
-            vidHeight = adWidth / videoAspect;
-          }
+          const hIfW = adWidth / videoAspect;
+          if (hIfW <= adHeight) { vidWidth = adWidth; vidHeight = hIfW; }
+          else { vidHeight = adHeight; vidWidth = adHeight * videoAspect; }
+        } else {
+          const hIfW = adWidth / videoAspect;
+          if (hIfW >= adHeight) { vidHeight = adHeight; vidWidth = adHeight * videoAspect; }
+          else { vidWidth = adWidth; vidHeight = adWidth / videoAspect; }
         }
 
-        // 4) Micro-adjustments
         vidWidth  *= SCALE_X;
         vidHeight *= SCALE_Y;
-
         videoPlane.setAttribute('width', vidWidth);
         videoPlane.setAttribute('height', vidHeight);
         videoPlane.setAttribute('position', `${OFFSET_X} ${OFFSET_Y} 0.001`);
 
-        // Optional: keep label below correctly
-        const labelY = -(adHeight / 2) - 0.14; // place label just below the ad
+        const labelY = -(adHeight / 2) - 0.14;
         const label = root.querySelector('a-text');
         if (label) label.setAttribute('position', `0 ${labelY} 0.001`);
       }
 
-      // Wait for both resources
       function whenReady() {
         if (adImg.complete && adImg.naturalWidth > 0 && video.readyState >= 1) {
           sizePlanes();
-        } else {
-          setTimeout(whenReady, 60);
-        }
+        } else { setTimeout(whenReady, 60); }
       }
-      // Kick off once metadata is available
       adImg.addEventListener('load', whenReady);
       video.addEventListener('loadedmetadata', whenReady);
-      // In case they are cached/instant
       whenReady();
 
-      // ====== Scanner visibility + video play/pause ======
       root.addEventListener('targetFound', async () => {
-        scanFrame.classList.add('hidden');
         try { await video.play(); }
         catch (e) {
           const resume = () => { video.play().catch(()=>{}); window.removeEventListener('touchend', resume); window.removeEventListener('click', resume); };
@@ -209,7 +156,6 @@
       });
 
       root.addEventListener('targetLost', () => {
-        scanFrame.classList.remove('hidden');
         video.pause();
       });
     });
