@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Oversized Video Overlay</title>
+  <title>WebAR Ad — Oversized Video Overlay (Stabilized)</title>
 
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
@@ -42,14 +42,105 @@
     <a-camera position="0 0 0" look-controls="enabled:false"></a-camera>
 
     <!-- Anchor on the detected image. Children lie exactly on that plane. -->
-    <a-entity id="anchor" mindar-image-target="targetIndex: 0">
+    <a-entity id="anchor" mindar-image-target="targetIndex: 0"></a-entity>
+
+    <!-- STABILIZED entity (world-following the anchor with smoothing) -->
+    <a-entity id="stabilized"
+              pose-smoother="anchor: #anchor; lerpPos: 0.18; slerpRot: 0.18; lerpScale: 0.18">
       <a-plane id="videoPlane"
                material="shader: flat; src: #adVideo; side: double; transparent: false"
-               position="0 0 0.001" rotation="0 0 0"
+               position="0 0 0"
+               rotation="0 0 0"
                width="1.5" height="1.5">
       </a-plane>
     </a-entity>
   </a-scene>
+
+  <!-- ===== Pose Smoothing Component (video stability) ===== -->
+  <script>
+    AFRAME.registerComponent('pose-smoother', {
+      schema: {
+        anchor:   { type: 'selector' }, // required: the MindAR anchor entity to follow
+        lerpPos:  { default: 0.2 },     // 0..1, higher = faster, lower = smoother
+        slerpRot: { default: 0.2 },
+        lerpScale:{ default: 0.2 }
+      },
+      init: function () {
+        this.tmpPos   = new THREE.Vector3();
+        this.tmpQuat  = new THREE.Quaternion();
+        this.tmpScale = new THREE.Vector3(1,1,1);
+
+        this.smPos   = new THREE.Vector3();
+        this.smQuat  = new THREE.Quaternion();
+        this.smScale = new THREE.Vector3(1,1,1);
+
+        this.initialized = false;
+
+        // Optional: small ring buffer for additional temporal smoothing on position/scale
+        this.bufSize = 5;
+        this.posBuf = Array(this.bufSize).fill(new THREE.Vector3());
+        this.sclBuf = Array(this.bufSize).fill(new THREE.Vector3(1,1,1));
+        this.bufIdx = 0;
+
+        // Visibility handling (show/hide when target is found/lost)
+        if (this.data.anchor) {
+          this.data.anchor.addEventListener('targetFound', () => { this.el.object3D.visible = true; });
+          this.data.anchor.addEventListener('targetLost',  () => { this.el.object3D.visible = false; });
+        }
+        this.el.object3D.visible = false; // hidden until target found
+      },
+      averageBuffer: function (buf) {
+        const acc = new THREE.Vector3();
+        for (let i=0;i<buf.length;i++) acc.add(buf[i]);
+        acc.multiplyScalar(1 / buf.length);
+        return acc;
+      },
+      tick: function () {
+        const anchor = this.data.anchor;
+        if (!anchor) return;
+
+        const aobj = anchor.object3D;
+        if (!aobj) return;
+
+        // Decompose anchor's world transform
+        aobj.updateMatrixWorld(true);
+        aobj.matrixWorld.decompose(this.tmpPos, this.tmpQuat, this.tmpScale);
+
+        // Feed buffers
+        this.posBuf[this.bufIdx] = this.tmpPos.clone();
+        this.sclBuf[this.bufIdx] = this.tmpScale.clone();
+        this.bufIdx = (this.bufIdx + 1) % this.bufSize;
+
+        // Compute buffered (averaged) target transforms
+        const avgPos = this.averageBuffer(this.posBuf);
+        const avgScl = this.averageBuffer(this.sclBuf);
+
+        if (!this.initialized) {
+          this.smPos.copy(avgPos);
+          this.smQuat.copy(this.tmpQuat);
+          this.smScale.copy(avgScl);
+          this.initialized = true;
+        } else {
+          // Exponential smoothing towards the averaged target
+          this.smPos.lerp(avgPos, this.data.lerpPos);
+          THREE.Quaternion.slerp(this.smQuat, this.tmpQuat, this.smQuat, this.data.slerpRot);
+          this.smScale.lerp(avgScl, this.data.lerpScale);
+        }
+
+        // Apply smoothed transform to this entity in WORLD SPACE
+        const o = this.el.object3D;
+        o.position.copy(this.smPos);
+        o.quaternion.copy(this.smQuat);
+        o.scale.copy(this.smScale);
+        o.matrixWorldNeedsUpdate = true;
+
+        // Extra: ensure child mesh is never culled (prevents flicker at edges)
+        const mesh = this.el.getObject3D('mesh');
+        if (mesh) mesh.traverse(m => { m.frustumCulled = false; });
+      }
+    });
+  </script>
+  <!-- ===== /Pose Smoothing Component ===== -->
 
   <script>
     window.addEventListener('DOMContentLoaded', () => {
@@ -62,25 +153,24 @@
       const video   = document.getElementById('adVideo');
 
       // Scale factor for oversizing the video
-      const SCALE_FACTOR = 1.25;
+      const SCALE_FACTOR = 1.3;
 
       // Attach MindAR camera to visible preview
       function attachPreview(){
         try{
           const ms = scene.systems['mindar-image-system'];
           const iv = ms && ms.video;
-          if (iv && iv.srcObject) { 
-            preview.srcObject = iv.srcObject; 
-            return true; 
+          if (iv && iv.srcObject) {
+            preview.srcObject = iv.srcObject;
+            return true;
           }
         }catch(e){}
         return false;
       }
-      
-      const tryAttach = () => { 
-        if (!attachPreview()) setTimeout(tryAttach, 150); 
+
+      const tryAttach = () => {
+        if (!attachPreview()) setTimeout(tryAttach, 150);
       };
-      
       scene.addEventListener('loaded', tryAttach);
 
       // Calculate target aspect ratio from image
@@ -93,41 +183,34 @@
 
       // Size the video plane to be larger than target
       function setupVideoPlane() {
-        console.log('Setting up video plane...');
-        
         // Get target aspect ratio
         const targetAspect = getTargetAspectRatio();
-        console.log('Target aspect ratio:', targetAspect);
-        
+
         // In MindAR coordinate system, target width is normalized to 1
-        // So we calculate height based on aspect ratio
         const targetWidth = 1.0;
         const targetHeight = targetWidth / targetAspect;
-        
-        console.log('Calculated target size:', targetWidth, 'x', targetHeight);
-        
+
         // Make video plane larger by scale factor
         const planeWidth = targetWidth * SCALE_FACTOR;
         const planeHeight = targetHeight * SCALE_FACTOR;
-        
-        console.log('Video plane size:', planeWidth, 'x', planeHeight, `(${SCALE_FACTOR}x scale)`);
-        
+
         // Apply dimensions to the plane
         vPlane.setAttribute('width', planeWidth);
         vPlane.setAttribute('height', planeHeight);
-        vPlane.setAttribute('position', '0 0 0.001'); // Centered on target
-        
-        // Reset video texture mapping to fill the plane properly
+        vPlane.setAttribute('position', '0 0 0');
+
+        // Ensure texture mapping is reset & no culling
         setTimeout(() => {
           const mesh = vPlane.getObject3D('mesh');
-          if (mesh && mesh.material && mesh.material.map) {
-            const map = mesh.material.map;
-            map.center.set(0.5, 0.5);
-            map.repeat.set(1, 1);
-            map.offset.set(0, 0);
-            map.needsUpdate = true;
-            mesh.frustumCulled = false;
-            console.log('Video texture applied');
+          if (mesh) {
+            mesh.traverse(m => { m.frustumCulled = false; });
+            if (mesh.material && mesh.material.map) {
+              const map = mesh.material.map;
+              map.center.set(0.5, 0.5);
+              map.repeat.set(1, 1);
+              map.offset.set(0, 0);
+              map.needsUpdate = true;
+            }
           }
         }, 100);
       }
@@ -135,75 +218,45 @@
       // Wait for image to load to get proper dimensions
       function waitForImageLoad() {
         if (adImg.complete && adImg.naturalWidth > 0) {
-          console.log('Image loaded:', adImg.naturalWidth, 'x', adImg.naturalHeight);
           setupVideoPlane();
         } else {
-          console.log('Waiting for image to load...');
           setTimeout(waitForImageLoad, 100);
         }
       }
 
-      // Initialize when resources are ready
-      adImg.addEventListener('load', () => {
-        console.log('Image load event fired');
-        setupVideoPlane();
-      });
-
+      adImg.addEventListener('load', setupVideoPlane);
       video.addEventListener('loadedmetadata', () => {
-        console.log('Video loaded:', video.videoWidth, 'x', video.videoHeight);
+        // can log video dimensions if needed
       });
 
-      // Start the process
       waitForImageLoad();
 
       // Handle target tracking
       anchor.addEventListener('targetFound', async () => {
-        console.log('=== TARGET FOUND ===');
         hint.classList.add('hidden');
-        
+
         // Re-apply sizing to ensure it's correct
-        setTimeout(() => {
-          setupVideoPlane();
-        }, 200);
-        
+        setTimeout(setupVideoPlane, 200);
+
         // Start video playback
-        try { 
-          await video.play(); 
-          console.log('Video started playing');
-        } catch(e) {
-          console.log('Autoplay blocked, waiting for user interaction');
-          const resume = () => { 
-            video.play().catch(console.error); 
-            window.removeEventListener('touchend', resume); 
-            window.removeEventListener('click', resume); 
+        try {
+          await video.play();
+        } catch {
+          const resume = () => {
+            video.play().catch(()=>{});
+            window.removeEventListener('touchend', resume);
+            window.removeEventListener('click', resume);
           };
           window.addEventListener('touchend', resume, { once: true });
           window.addEventListener('click', resume, { once: true });
         }
       });
-      
+
       anchor.addEventListener('targetLost', () => {
-        console.log('Target lost');
         hint.classList.remove('hidden');
         video.pause();
-      });
-
-      // Debug: Log when MindAR system is ready with compatibility checks
-      scene.addEventListener('loaded', function() {
-        console.log('A-Frame scene loaded');
-        setTimeout(function() {
-          try {
-            var ms = scene.systems['mindar-image-system'];
-            if (ms) {
-              console.log('MindAR system available');
-            }
-          } catch(e) {
-            console.log('MindAR system check error:', e);
-          }
-        }, 1500); // Increased timeout for older devices
       });
     });
   </script>
 </body>
 </html>
-
