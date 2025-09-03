@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Perfect Video Overlay</title>
+  <title>WebAR Ad — Oversized Video Overlay</title>
 
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
@@ -35,7 +35,6 @@
     device-orientation-permission-ui="enabled: false">
 
     <a-assets>
-      <!-- ad.png is used to determine target aspect ratio -->
       <img id="adImage" src="./assets/ad.png" crossorigin="anonymous">
       <video id="adVideo" src="./assets/ad.mp4" preload="auto" playsinline webkit-playsinline muted loop crossorigin="anonymous"></video>
     </a-assets>
@@ -47,7 +46,7 @@
       <a-plane id="videoPlane"
                material="shader: flat; src: #adVideo; side: double; transparent: false"
                position="0 0 0.001" rotation="0 0 0"
-               width="1" height="1">
+               width="1.5" height="1.5">
       </a-plane>
     </a-entity>
   </a-scene>
@@ -61,6 +60,9 @@
       const vPlane  = document.getElementById('videoPlane');
       const adImg   = document.getElementById('adImage');
       const video   = document.getElementById('adVideo');
+
+      // Scale factor for oversizing the video
+      const SCALE_FACTOR = 1.5;
 
       // Attach MindAR camera to visible preview
       function attachPreview(){
@@ -81,146 +83,97 @@
       
       scene.addEventListener('loaded', tryAttach);
 
-      // Get the material map for UV adjustments
-      function getMap(){
-        const mesh = vPlane.getObject3D('mesh');
-        return (mesh && mesh.material && mesh.material.map) ? mesh.material.map : null;
+      // Calculate target aspect ratio from image
+      function getTargetAspectRatio() {
+        if (adImg.naturalWidth > 0 && adImg.naturalHeight > 0) {
+          return adImg.naturalWidth / adImg.naturalHeight;
+        }
+        return 16 / 9; // fallback
       }
 
-      // Apply object-fit: cover behavior to video texture
-      function applyCoverUV(targetAspect, videoAspect){
-        const map = getMap();
-        if (!map) { 
-          setTimeout(() => applyCoverUV(targetAspect, videoAspect), 50); 
-          return; 
-        }
+      // Size the video plane to be larger than target
+      function setupVideoPlane() {
+        console.log('Setting up video plane...');
         
-        // Reset UV mapping to defaults
-        map.center.set(0.5, 0.5);
-        map.repeat.set(1, 1);
-        map.offset.set(0, 0);
+        // Get target aspect ratio
+        const targetAspect = getTargetAspectRatio();
+        console.log('Target aspect ratio:', targetAspect);
         
-        // Apply cover scaling
-        if (Math.abs(videoAspect - targetAspect) > 0.01) { // Only if aspects differ significantly
-          if (videoAspect > targetAspect) {
-            // Video is wider than target - crop sides
-            const scale = targetAspect / videoAspect;
-            map.repeat.set(scale, 1);
-            map.offset.set((1 - scale) / 2, 0);
-          } else {
-            // Video is taller than target - crop top/bottom
-            const scale = videoAspect / targetAspect;
-            map.repeat.set(1, scale);
-            map.offset.set(0, (1 - scale) / 2);
-          }
-        }
+        // In MindAR coordinate system, target width is normalized to 1
+        // So we calculate height based on aspect ratio
+        const targetWidth = 1.0;
+        const targetHeight = targetWidth / targetAspect;
         
-        map.needsUpdate = true;
+        console.log('Calculated target size:', targetWidth, 'x', targetHeight);
         
-        // Disable frustum culling and ensure proper rendering
-        const mesh = vPlane.getObject3D('mesh');
-        if (mesh) {
-          mesh.frustumCulled = false;
-          if (mesh.material) {
-            mesh.material.needsUpdate = true;
-          }
-        }
-      }
-
-      // Get target aspect ratio from multiple sources
-      function getTargetAspect(){
-        let targetAspect = 16/9; // Default fallback
+        // Make video plane larger by scale factor
+        const planeWidth = targetWidth * SCALE_FACTOR;
+        const planeHeight = targetHeight * SCALE_FACTOR;
         
-        try {
-          // First, try to get from MindAR metadata
-          const ms = scene.systems['mindar-image-system'];
-          if (ms && ms.controller && ms.controller.imageTargets && ms.controller.imageTargets[0]) {
-            const target = ms.controller.imageTargets[0];
-            if (target.width && target.height) {
-              targetAspect = target.width / target.height;
-              console.log('Using MindAR target aspect:', targetAspect);
-              return targetAspect;
-            }
-          }
-          
-          // Fallback to image dimensions
-          if (adImg.naturalWidth > 0 && adImg.naturalHeight > 0) {
-            targetAspect = adImg.naturalWidth / adImg.naturalHeight;
-            console.log('Using image aspect:', targetAspect);
-            return targetAspect;
-          }
-        } catch(e) {
-          console.warn('Error getting target aspect:', e);
-        }
+        console.log('Video plane size:', planeWidth, 'x', planeHeight, `(${SCALE_FACTOR}x scale)`);
         
-        console.log('Using default aspect:', targetAspect);
-        return targetAspect;
-      }
-
-      // Size the plane to match the target perfectly
-      function sizePlaneToTarget(){
-        const targetAspect = getTargetAspect();
-        
-        // In MindAR, the target width is normalized to 1
-        const planeWidth = 1.0;
-        const planeHeight = planeWidth / targetAspect;
-        
-        // Position at exact center of target (0,0,0 in target space)
-        vPlane.setAttribute('position', '0 0 0.001'); // Slightly above to avoid z-fighting
+        // Apply dimensions to the plane
         vPlane.setAttribute('width', planeWidth);
         vPlane.setAttribute('height', planeHeight);
+        vPlane.setAttribute('position', '0 0 0.001'); // Centered on target
         
-        // Apply video texture mapping
-        const videoAspect = (video.videoWidth || video.clientWidth || 16) / (video.videoHeight || video.clientHeight || 9);
-        console.log('Target aspect:', targetAspect, 'Video aspect:', videoAspect);
-        
-        applyCoverUV(targetAspect, videoAspect);
+        // Reset video texture mapping to fill the plane properly
+        setTimeout(() => {
+          const mesh = vPlane.getObject3D('mesh');
+          if (mesh && mesh.material && mesh.material.map) {
+            const map = mesh.material.map;
+            map.center.set(0.5, 0.5);
+            map.repeat.set(1, 1);
+            map.offset.set(0, 0);
+            map.needsUpdate = true;
+            mesh.frustumCulled = false;
+            console.log('Video texture applied');
+          }
+        }, 100);
       }
 
-      // Wait for all resources to be ready
-      function waitForReady(){
-        const imageReady = adImg.complete && adImg.naturalWidth > 0;
-        const videoReady = video.readyState >= 2; // HAVE_CURRENT_DATA
-        
-        if (imageReady && videoReady) {
-          sizePlaneToTarget();
-          console.log('Resources ready, plane sized');
+      // Wait for image to load to get proper dimensions
+      function waitForImageLoad() {
+        if (adImg.complete && adImg.naturalWidth > 0) {
+          console.log('Image loaded:', adImg.naturalWidth, 'x', adImg.naturalHeight);
+          setupVideoPlane();
         } else {
-          console.log('Waiting for resources...', {imageReady, videoReady});
-          setTimeout(waitForReady, 100);
+          console.log('Waiting for image to load...');
+          setTimeout(waitForImageLoad, 100);
         }
       }
 
-      // Event listeners for resource loading
+      // Initialize when resources are ready
       adImg.addEventListener('load', () => {
-        console.log('Image loaded:', adImg.naturalWidth, 'x', adImg.naturalHeight);
-        waitForReady();
+        console.log('Image load event fired');
+        setupVideoPlane();
       });
-      
-      video.addEventListener('loadeddata', () => {
+
+      video.addEventListener('loadedmetadata', () => {
         console.log('Video loaded:', video.videoWidth, 'x', video.videoHeight);
-        waitForReady();
       });
 
-      // Start checking if resources are ready
-      waitForReady();
+      // Start the process
+      waitForImageLoad();
 
-      // Handle target tracking events
+      // Handle target tracking
       anchor.addEventListener('targetFound', async () => {
-        console.log('Target found');
+        console.log('=== TARGET FOUND ===');
         hint.classList.add('hidden');
         
-        // Ensure plane is properly sized when target is found
-        sizePlaneToTarget();
+        // Re-apply sizing to ensure it's correct
+        setTimeout(() => {
+          setupVideoPlane();
+        }, 200);
         
         // Start video playback
         try { 
           await video.play(); 
-          console.log('Video playing');
+          console.log('Video started playing');
         } catch(e) {
-          console.log('Auto-play blocked, waiting for user interaction');
+          console.log('Autoplay blocked, waiting for user interaction');
           const resume = () => { 
-            video.play().catch(() => {}); 
+            video.play().catch(console.error); 
             window.removeEventListener('touchend', resume); 
             window.removeEventListener('click', resume); 
           };
@@ -235,9 +188,15 @@
         video.pause();
       });
 
-      // Handle window resize
-      window.addEventListener('resize', () => {
-        setTimeout(sizePlaneToTarget, 100);
+      // Debug: Log when MindAR system is ready
+      scene.addEventListener('loaded', () => {
+        console.log('A-Frame scene loaded');
+        setTimeout(() => {
+          const ms = scene.systems['mindar-image-system'];
+          if (ms) {
+            console.log('MindAR system available');
+          }
+        }, 1000);
       });
     });
   </script>
