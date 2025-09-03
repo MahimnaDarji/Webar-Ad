@@ -188,15 +188,19 @@
         video.pause();
       });
 
-      // Debug: Log when MindAR system is ready
-      scene.addEventListener('loaded', () => {
+      // Debug: Log when MindAR system is ready with compatibility checks
+      scene.addEventListener('loaded', function() {
         console.log('A-Frame scene loaded');
-        setTimeout(() => {
-          const ms = scene.systems['mindar-image-system'];
-          if (ms) {
-            console.log('MindAR system available');
+        setTimeout(function() {
+          try {
+            var ms = scene.systems['mindar-image-system'];
+            if (ms) {
+              console.log('MindAR system available');
+            }
+          } catch(e) {
+            console.log('MindAR system check error:', e);
           }
-        }, 1000);
+        }, 1500); // Increased timeout for older devices
       });
     });
   </script>
