@@ -27,7 +27,7 @@
     .hint{
       position: fixed;
       left: 50%;
-      top: 18%;                /* clearly above scanner zone */
+      top: 18%;                 /* above scanner area */
       transform: translateX(-50%);
       z-index: 20;
       padding: 10px 16px;
@@ -40,6 +40,43 @@
       pointer-events: none;
     }
     .hint.hidden{ display:none; }
+
+    /* Action buttons */
+    .actions{
+      position: fixed; right: 12px; top: 12px; z-index: 30;
+      display: flex; gap: 8px; flex-wrap: wrap;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .btn{
+      padding: 10px 14px; border-radius: 12px;
+      background: rgba(20,20,20,0.85); color: #fff;
+      border: 1px solid #3a3a3a; cursor: pointer; backdrop-filter: blur(6px);
+      font-weight: 600; font-size: 14px;
+    }
+    .btn:hover{ background: rgba(30,30,30,0.9); }
+    #pickInput{ display:none; }
+
+    /* ===== Screen Mode (scan image on this device) ===== */
+    #screenMode{
+      position: fixed; inset: 0; z-index: 25; display: none;
+      background: #000;
+    }
+    #screenImg{
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.6);
+    }
+    /* Video overlays the chosen image and auto-fits ("cover") */
+    #screenVideo{
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.6);
+      width: 0; height: 0;         /* sized in JS to match the image box */
+      object-fit: cover;            /* crop without distortion */
+    }
+    #screenClose{
+      position: absolute; right: 16px; top: 16px; z-index: 26;
+      padding: 8px 10px; border-radius: 10px; border: 1px solid #3a3a3a;
+      background: rgba(25,25,25,0.9); color: #fff; cursor: pointer; font-weight: 600;
+    }
   </style>
 </head>
 <body>
@@ -48,6 +85,20 @@
 
   <!-- Instruction text ABOVE scanner -->
   <div id="hint" class="hint">Point your camera at your printed ad</div>
+
+  <!-- Actions: pick image (screen mode) + back to camera -->
+  <div class="actions">
+    <button id="pickBtn" class="btn">Use image from gallery</button>
+    <button id="backToCamera" class="btn" style="display:none;">Back to camera</button>
+    <input id="pickInput" type="file" accept="image/*" />
+  </div>
+
+  <!-- ===== Screen Mode (user-selected image on this device) ===== -->
+  <div id="screenMode" aria-hidden="true">
+    <button id="screenClose">Back to camera</button>
+    <img id="screenImg" alt="Selected image" />
+    <video id="screenVideo" autoplay muted loop playsinline></video>
+  </div>
 
   <a-scene
     mindar-image="imageTargetSrc: ./assets/ad.mind;
@@ -82,30 +133,40 @@
 
   <script>
     window.addEventListener('DOMContentLoaded', () => {
-      const scene = document.querySelector('a-scene');
+      const scene   = document.querySelector('a-scene');
       const preview = document.getElementById('camPreview');
-      const hint = document.getElementById('hint');
-      const root = document.getElementById('targetRoot');
-      const adImg = document.getElementById('adImage');
+      const hint    = document.getElementById('hint');
+      const root    = document.getElementById('targetRoot');
+      const adImg   = document.getElementById('adImage');
       const adPlane = document.getElementById('adPlane');
-      const video = document.getElementById('adVideo');
+      const video   = document.getElementById('adVideo');
       const videoPlane = document.getElementById('videoPlane');
 
-      // Attach MindAR feed to preview
+      // ==== CAMERA MODE: attach MindAR feed to preview, auto-fit planes, hide spinner on ready
       const attachPreview = () => {
         try {
           const ms = scene.systems['mindar-image-system'];
-          if (ms && ms.video && ms.video.srcObject){
+          if (ms && ms.video && ms.video.srcObject) {
             preview.srcObject = ms.video.srcObject;
             return true;
           }
-        } catch(e){}
+        } catch (e) {}
         return false;
       };
       const tryAttach = () => { if (!attachPreview()) setTimeout(tryAttach,150); };
       scene.addEventListener('loaded', tryAttach);
 
-      // Fit logic: size ad & crop video
+      // Hide MindAR loading spinner as soon as AR is ready
+      scene.addEventListener('arReady', () => {
+        const loading = document.querySelector('.mindar-ui-loading');
+        if (loading) loading.style.display = 'none';
+      });
+      scene.addEventListener('arError', () => {
+        const loading = document.querySelector('.mindar-ui-loading');
+        if (loading) loading.style.display = 'none';
+      });
+
+      // Fit logic on camera mode
       function getVideoMap(){
         const mesh = videoPlane.getObject3D('mesh');
         return (mesh && mesh.material && mesh.material.map) ? mesh.material.map : null;
@@ -158,6 +219,59 @@
         hint.classList.remove('hidden');
         video.pause();
       });
+
+      // ==== SCREEN MODE: user picks image and we overlay the same video on it locally
+      const pickBtn = document.getElementById('pickBtn');
+      const pickInput = document.getElementById('pickInput');
+      const backBtn = document.getElementById('backToCamera');
+
+      const screenMode = document.getElementById('screenMode');
+      const screenImg  = document.getElementById('screenImg');
+      const screenVid  = document.getElementById('screenVideo');
+      const screenClose= document.getElementById('screenClose');
+
+      // Use the same video file for screen mode
+      screenVid.src = video.getAttribute('src');
+
+      function enterScreenMode(blobURL){
+        // Pause AR video (camera mode)
+        video.pause();
+        // Show screen-mode UI
+        screenImg.src = blobURL;
+        screenMode.style.display = 'block';
+        backBtn.style.display = 'inline-block';
+        // Fit the overlay video box to the image box
+        requestAnimationFrame(fitScreenOverlay);
+        // Start playing
+        screenVid.play().catch(()=>{});
+      }
+      function exitScreenMode(){
+        screenMode.style.display = 'none';
+        backBtn.style.display = 'none';
+        screenVid.pause();
+      }
+
+      // Size the video element to exactly cover the displayed image box (CSS cover, centered)
+      function fitScreenOverlay(){
+        const imgRect = screenImg.getBoundingClientRect();
+        // position video centered on image
+        screenVid.style.width  = imgRect.width  + 'px';
+        screenVid.style.height = imgRect.height + 'px';
+        screenVid.style.left = (imgRect.left + imgRect.width/2) + 'px';
+        screenVid.style.top  = (imgRect.top  + imgRect.height/2) + 'px';
+        screenVid.style.transform = 'translate(-50%, -50%)';
+      }
+      window.addEventListener('resize', () => { if (screenMode.style.display==='block') fitScreenOverlay(); });
+
+      pickBtn.addEventListener('click', () => pickInput.click());
+      pickInput.addEventListener('change', () => {
+        const f = pickInput.files && pickInput.files[0];
+        if (!f) return;
+        const url = URL.createObjectURL(f);
+        enterScreenMode(url);
+      });
+      backBtn.addEventListener('click', exitScreenMode);
+      screenClose.addEventListener('click', exitScreenMode);
     });
   </script>
 </body>
