@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WebAR Ad — Perfect Video Overlay</title>
+  <title>WebAR Ad</title>
 
   <script src="https://cdn.jsdelivr.net/npm/aframe@1.4.2/dist/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
@@ -95,27 +95,35 @@
           return; 
         }
         
-        // Reset UV mapping
+        // Reset UV mapping to defaults
         map.center.set(0.5, 0.5);
+        map.repeat.set(1, 1);
+        map.offset.set(0, 0);
         
-        if (videoAspect > targetAspect) {
-          // Video is wider than target - crop sides
-          const scale = targetAspect / videoAspect;
-          map.repeat.set(scale, 1);
-          map.offset.set((1 - scale) / 2, 0);
-        } else {
-          // Video is taller than target - crop top/bottom
-          const scale = videoAspect / targetAspect;
-          map.repeat.set(1, scale);
-          map.offset.set(0, (1 - scale) / 2);
+        // Apply cover scaling
+        if (Math.abs(videoAspect - targetAspect) > 0.01) { // Only if aspects differ significantly
+          if (videoAspect > targetAspect) {
+            // Video is wider than target - crop sides
+            const scale = targetAspect / videoAspect;
+            map.repeat.set(scale, 1);
+            map.offset.set((1 - scale) / 2, 0);
+          } else {
+            // Video is taller than target - crop top/bottom
+            const scale = videoAspect / targetAspect;
+            map.repeat.set(1, scale);
+            map.offset.set(0, (1 - scale) / 2);
+          }
         }
         
         map.needsUpdate = true;
         
-        // Disable frustum culling for better tracking
+        // Disable frustum culling and ensure proper rendering
         const mesh = vPlane.getObject3D('mesh');
         if (mesh) {
           mesh.frustumCulled = false;
+          if (mesh.material) {
+            mesh.material.needsUpdate = true;
+          }
         }
       }
 
