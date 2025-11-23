@@ -1,4 +1,4 @@
-# WebAR QR-Activated Video Ad
+# AR Video Playback on Print Media
 
 This project shows how a printed advertisement can trigger an interactive video overlay using WebAR. When a user scans the QR code, the browser opens an AR view, detects the printed artwork, and plays the video directly on the page through image tracking.
 
